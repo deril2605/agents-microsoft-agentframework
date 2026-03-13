@@ -19,7 +19,7 @@ def normalize_base_url(value: str | None) -> str | None:
 
 
 # Configure Azure OpenAI client based on environment
-load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 MODEL_NAME = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT") or os.getenv("LLM_MODEL") or "gpt-4.1-mini"
 client = openai.OpenAI(
     base_url=normalize_base_url(os.getenv("AZURE_OPENAI_ENDPOINT") or os.getenv("LLM_BASE_URL")),
