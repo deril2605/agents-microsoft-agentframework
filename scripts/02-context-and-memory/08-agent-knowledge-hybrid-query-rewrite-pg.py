@@ -1,72 +1,11 @@
 """
-Knowledge retrieval (RAG) via PostgreSQL with hybrid search (vector + full-text).
+Knowledge retrieval with query rewriting for multi-turn conversations.
 
 Diagram:
 
-  Input -> Agent ---------------------> LLM -> Response
-            |                           ^
-            | search with input         | relevant knowledge
-            v                           |
-        +----------------+              |
-        | Knowledge      |--------------+
-        | store          |
-        | (Postgres)     |
-        +----------------+
-"""
-"""
-prereq: 
-docker run -d --name pgvector-demo -e POSTGRES_PASSWORD=postgres -p 5432:5432 pgvector/pgvector:pg17
+  Conversation -> Rewrite query -> Hybrid search -> Inject knowledge -> LLM answer
 """
 
-"""
-# Flow of 07-agent-knowledge-postgres-hybrid-search.py
-#
-#   User question
-#        |
-#        v
-#   agent.run(...)
-#        |
-#        v
-#   PostgresKnowledgeProvider.before_run(...)
-#        |
-#        +--> Take latest user text
-#        |
-#        +--> get_embedding(user_text)
-#        |        |
-#        |        v
-#        |   embedding vector
-#        |
-#        +--> Run hybrid search in PostgreSQL
-#                 |
-#                 +--> Vector search with pgvector
-#                 |      embedding <=> query_embedding
-#                 |
-#                 +--> Full-text search with tsvector / tsquery
-#                 |
-#                 +--> Fuse both rankings with RRF
-#                 |
-#                 v
-#            Top matching products
-#        |
-#        v
-#   Format matching rows as knowledge context
-#        |
-#        v
-#   Inject context into agent session
-#        |
-#        v
-#   LLM sees:
-#     - system instructions
-#     - user question
-#     - retrieved product knowledge
-#        |
-#        v
-#   LLM generates grounded answer
-#        |
-#        v
-#   Response returned to user
-
-"""
 import asyncio
 import logging
 import os
@@ -141,7 +80,6 @@ embed_client = OpenAI(
 
 
 def get_embedding(text: str) -> list[float]:
-    """Get an embedding vector for the given text."""
     response = embed_client.embeddings.create(
         input=text,
         model=EMBED_MODEL,
@@ -227,10 +165,8 @@ PRODUCTS = [
 
 
 def create_knowledge_db(conn: psycopg.Connection) -> None:
-    """Create the product catalog in PostgreSQL with pgvector and full-text indexes."""
     conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
     register_vector(conn)
-
     conn.execute("DROP TABLE IF EXISTS products")
     conn.execute(
         f"""
@@ -264,7 +200,7 @@ def create_knowledge_db(conn: psycopg.Connection) -> None:
     logger.info("[Knowledge] Product catalog seeded with embeddings.")
 
 
-HYBRID_SEARCH_SQL = f"""
+HYBRID_SEARCH_SQL = """
 WITH semantic_search AS (
     SELECT
         id,
@@ -303,13 +239,33 @@ LIMIT %(limit)s
 """
 
 
-class PostgresKnowledgeProvider(BaseContextProvider):
-    """Retrieve relevant product knowledge via hybrid search with reciprocal rank fusion."""
+QUERY_REWRITE_PROMPT = (
+    "You are a search query optimizer for an outdoor gear product catalog. "
+    "Given a conversation between a user and an assistant, generate one concise, "
+    "self-contained search query that captures what the user is currently looking for. "
+    "Include relevant details from earlier messages that clarify the user's intent. "
+    "Respond with only the search query."
+)
 
-    def __init__(self, conn: psycopg.Connection, max_results: int = 3):
-        super().__init__(source_id="postgres-knowledge")
+
+class PostgresQueryRewriteProvider(BaseContextProvider):
+    """Retrieve product knowledge using an LLM-rewritten query for multi-turn conversations."""
+
+    def __init__(self, conn: psycopg.Connection, rewrite_client: OpenAIChatClient, max_results: int = 3):
+        super().__init__(source_id="postgres-knowledge-rewrite")
         self.conn = conn
+        self.rewrite_client = rewrite_client
         self.max_results = max_results
+
+    async def _rewrite_query(self, conversation_messages: list[Message]) -> str:
+        conversation_text = "\n".join(f"{msg.role}: {msg.text}" for msg in conversation_messages if msg.text)
+        rewrite_messages = [
+            Message(role="system", text=QUERY_REWRITE_PROMPT),
+            Message(role="user", text=f"Conversation:\n{conversation_text}"),
+        ]
+        response = await self.rewrite_client.get_response(rewrite_messages)
+        rewritten = (response.text or "").strip().strip('"')
+        return rewritten or conversation_messages[-1].text or ""
 
     def _search(self, query: str) -> list[dict[str, Any]]:
         query_embedding = Vector(get_embedding(query))
@@ -344,16 +300,20 @@ class PostgresKnowledgeProvider(BaseContextProvider):
         context: SessionContext,
         state: dict[str, Any],
     ) -> None:
-        user_text = next((msg.text for msg in reversed(context.input_messages) if msg.role == "user" and msg.text), None)
-        if not user_text:
+        all_messages = list(context.get_messages()) + list(context.input_messages)
+        conversation = [msg for msg in all_messages if msg.role in ("user", "assistant") and msg.text]
+        if not conversation:
             return
 
-        results = self._search(user_text)
+        search_query = await self._rewrite_query(conversation)
+        logger.info("[Query Rewrite] -> %s", search_query[:120])
+
+        results = self._search(search_query)
         if not results:
-            logger.info("[Knowledge] No matching products found for: %s", user_text)
+            logger.info("[Knowledge] No matching products found for: %s", search_query)
             return
 
-        logger.info("[Knowledge] Found %d matching product(s) for: %s", len(results), user_text)
+        logger.info("[Knowledge] Found %d matching product(s)", len(results))
         context.extend_messages(
             self.source_id,
             [Message(role="user", text=self._format_results(results))],
@@ -361,7 +321,6 @@ class PostgresKnowledgeProvider(BaseContextProvider):
 
 
 def setup_db() -> psycopg.Connection | None:
-    """Connect to PostgreSQL and seed the knowledge base."""
     try:
         conn = psycopg.connect(POSTGRES_URL, connect_timeout=5)
     except Exception as exc:
@@ -383,7 +342,7 @@ def setup_db() -> psycopg.Connection | None:
 
 
 def build_agent(conn: psycopg.Connection) -> Agent:
-    knowledge_provider = PostgresKnowledgeProvider(conn=conn)
+    knowledge_provider = PostgresQueryRewriteProvider(conn=conn, rewrite_client=chat_client)
     return Agent(
         client=chat_client,
         instructions=(
@@ -397,21 +356,28 @@ def build_agent(conn: psycopg.Connection) -> Agent:
 
 
 async def main() -> None:
-    """Demonstrate hybrid search RAG with several queries."""
     conn = setup_db()
     if conn is None:
         return
 
     agent = build_agent(conn)
+    session = agent.create_session()
     try:
-        safe_print("\n=== Knowledge Retrieval (RAG) with PostgreSQL Hybrid Search ===")
+        safe_print("\n=== Knowledge Retrieval with Query Rewriting ===")
 
-        safe_print("User: I'm planning a hiking trip. What boots and poles do you recommend?")
-        response = await agent.run("I'm planning a hiking trip. What boots and poles do you recommend?")
+        user_msg = "I need protection from rain on rocky paths."
+        safe_print(f"User: {user_msg}")
+        response = await agent.run(user_msg, session=session)
         safe_print(f"Agent: {response.text}\n")
 
-        safe_print("User: I want gadgets for wildlife watching")
-        response = await agent.run("I want gadgets for wildlife watching")
+        user_msg = "What similar gear do you have for snowy situations?"
+        safe_print(f"User: {user_msg}")
+        response = await agent.run(user_msg, session=session)
+        safe_print(f"Agent: {response.text}\n")
+
+        user_msg = "Anything lighter weight I could bring along?"
+        safe_print(f"User: {user_msg}")
+        response = await agent.run(user_msg, session=session)
         safe_print(f"Agent: {response.text}\n")
     finally:
         conn.close()
