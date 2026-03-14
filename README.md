@@ -2,6 +2,9 @@
 
 This repo is my running guide to learning how to build agents with Microsoft Agent Framework.
 
+Reference repo:
+- [Azure-Samples/python-agentframework-demos](https://github.com/Azure-Samples/python-agentframework-demos)
+
 The focus here is not just "what code was written", but the concepts behind agent design:
 - how agents are structured
 - when tools are useful
@@ -9,20 +12,36 @@ The focus here is not just "what code was written", but the concepts behind agen
 - how to keep context small and relevant
 - how to reason about retrieval, middleware, and delegation
 
-Right now this guide covers the first 2 days of study:
+Right now this guide covers the first 3 days of study:
 - Day 1: Building agents
 - Day 2: Context and memory
+- Day 3: Monitoring and evaluating
 
 As I keep studying, I can extend this README day by day.
+
+## Table Of Contents
+
+- [Repo Map](#repo-map)
+- [Core Mental Model](#core-mental-model)
+- [Day 1: Building Agents](#day-1-building-agents)
+- [Day 2: Context And Memory](#day-2-context-and-memory)
+- [Day 3: Monitoring And Evaluating](#day-3-monitoring-and-evaluating)
+- [Concepts To Be Able To Explain Clearly](#concepts-to-be-able-to-explain-clearly)
+- [Quick Comparison Table](#quick-comparison-table)
+- [Practical Design Heuristics](#practical-design-heuristics)
+- [Practical Clarifications](#practical-clarifications)
+- [What To Add Next](#what-to-add-next)
 
 ## Repo Map
 
 - Day 1: [scripts/01-building-agents](./scripts/01-building-agents)
 - Day 2: [scripts/02-context-and-memory](./scripts/02-context-and-memory)
+- Day 3: [scripts/03-monitoring-and-evaluating](./scripts/03-monitoring-and-evaluating)
 
 Slide decks:
 - Building agents slides: [scripts/01-building-agents/README.md](./scripts/01-building-agents/README.md)
 - Context and memory slides: [scripts/02-context-and-memory/README.md](./scripts/02-context-and-memory/README.md)
+- Monitoring and evaluating slides: [scripts/03-monitoring-and-evaluating/README.md](./scripts/03-monitoring-and-evaluating/README.md)
 
 ## Core Mental Model
 
@@ -48,6 +67,12 @@ An agent is usually made up of a few building blocks:
 
 - `Sub-agents`
   Other agents used as specialized workers so the top-level agent stays simpler and smaller.
+
+- `Observability`
+  Telemetry, traces, logs, and runtime signals that help explain what the agent did.
+
+- `Evaluation`
+  Scoring and judging whether the agent did a good job.
 
 ## Day 1: Building Agents
 
@@ -336,6 +361,170 @@ By the end of Day 2, the main ideas are:
 - summarization compresses context
 - sub-agents quarantine heavy context
 
+## Day 3: Monitoring And Evaluating
+
+Folder: [scripts/03-monitoring-and-evaluating](./scripts/03-monitoring-and-evaluating)
+
+This day answers a different question from Days 1 and 2:
+
+Once an agent is running, how do you understand what it did and whether it did it well?
+
+### 1. Observability tells you what happened
+
+Script: [01-agent-otel-aspire.py](./scripts/03-monitoring-and-evaluating/01-agent-otel-aspire.py)
+
+Core idea:
+- observability is about runtime visibility
+- it helps you inspect traces, spans, logs, and tool calls
+- it is for debugging, monitoring, and understanding execution
+
+What matters:
+- OpenTelemetry gives a standard telemetry pipeline
+- Aspire can receive and display traces locally
+- Application Insights is another destination for telemetry
+- console exporters are optional and mainly useful for local debugging
+
+Best mental model:
+- observability answers "what happened during the run?"
+
+### 2. Evaluation tells you how good the run was
+
+Script: [02-agent-eval.py](./scripts/03-monitoring-and-evaluating/02-agent-eval.py)
+
+This sample runs the agent and then scores the outcome with Azure AI Evaluation.
+
+The big idea is that observability and evaluation are different:
+- observability measures behavior and execution
+- evaluation measures quality
+
+The script uses four evaluators:
+
+#### Intent resolution
+
+Did the agent actually resolve what the user wanted?
+
+Best mental model:
+- "Did the agent solve the user's problem?"
+
+#### Response completeness
+
+Did the final response include the important expected content?
+
+Best mental model:
+- compare the answer against a human-written reference or expected outcome
+
+#### Task adherence
+
+Did the agent follow the instructions, constraints, and requested scope correctly?
+
+Best mental model:
+- "Did the agent do the task the way it was asked to?"
+
+#### Tool call accuracy
+
+Did the agent call the right tools with the right arguments, at the right times?
+
+Best mental model:
+- "Was tool use appropriate and necessary?"
+
+### 3. Not all evaluators work the same way
+
+One of the most important distinctions from this day:
+
+- `ResponseCompletenessEvaluator` leans on a human-provided ground truth
+- `IntentResolutionEvaluator` and `TaskAdherenceEvaluator` are more judgment-based
+- `ToolCallAccuracyEvaluator` infers expected tool usage from the query, response history, and tool definitions
+
+This means:
+- some evaluation is reference-based
+- some evaluation is model-judged
+- some evaluation should be combined with rule-based checks when precision matters
+
+### 4. The evaluator is usually a separate judge
+
+A useful design principle from this day:
+
+- the task agent can self-reflect
+- but a separate evaluator is usually more trustworthy for measurement
+
+Good rule of thumb:
+- use self-evaluation to improve answers
+- use external evaluation to measure answers
+
+### 5. Model choice for evaluation matters
+
+Another practical takeaway:
+
+- the agent model and evaluator model do not have to be the same
+- often they should not be
+
+Best practice:
+- choose the agent model for speed, cost, and task performance
+- choose the evaluator model for judgment quality and consistency
+- keep evaluator choice stable over time so scores remain comparable
+
+### 6. Inline evaluation vs dataset-driven evaluation
+
+In [02-agent-eval.py](./scripts/03-monitoring-and-evaluating/02-agent-eval.py), evaluation happens inline:
+- run the agent
+- collect response and message history
+- call evaluators directly
+
+But another valid pattern is dataset-driven evaluation with Azure AI Evaluation's `evaluate()` API:
+- save evaluation rows to JSONL
+- run many evaluations in one batch-style call
+- optionally send results to Azure AI Foundry
+
+Best mental model:
+- inline evaluation is good for learning, demos, and local experiments
+- dataset-driven evaluation is better for larger test sets, CI/CD, and tracking regressions over time
+
+### 7. Azure AI Foundry can become the evaluation home
+
+If using the dataset-driven `evaluate()` workflow, results can be sent to Azure AI Foundry by setting an Azure AI project URL and passing it to the evaluation run.
+
+Why this matters:
+- evaluation becomes shareable
+- results are easier to inspect over time
+- it fits better with team workflows and quality tracking
+
+### 8. CI/CD evaluation is a real pattern
+
+From the slides, an important operational idea is:
+
+- evaluations do not have to stay local
+- they can run in GitHub Actions
+- results can be surfaced in pull requests
+
+This is a strong production concept:
+- agent quality should be tracked like software quality
+- evaluation can become part of release gating and regression detection
+
+### 9. Red teaming is part of the quality story
+
+Even though the red teaming code is not part of this study pass, it still matters conceptually.
+
+Important idea:
+- quality is not only usefulness
+- quality also includes safety, failure modes, and adversarial behavior
+
+So evaluation maturity usually grows in layers:
+- correctness and usefulness
+- instruction following
+- tool correctness
+- safety and adversarial testing
+
+### Day 3 Summary
+
+By the end of Day 3, the main ideas are:
+- observability explains execution
+- evaluation judges quality
+- reference-based and judge-based evaluation are different
+- tool evaluation is inferred, not usually hardcoded
+- the evaluator is often better kept separate from the task agent
+- model choice for evaluation should be deliberate
+- Azure AI Foundry and CI/CD make evaluation operational, not just local
+
 ## Concepts To Be Able To Explain Clearly
 
 These are the concepts I should be able to explain simply and confidently.
@@ -373,6 +562,18 @@ These are the concepts I should be able to explain simply and confidently.
 - How sub-agents reduce context bloat
 - Why total tokens may still be high even when coordinator tokens are lower
 
+### Monitoring and evaluation
+
+- What is the difference between observability and evaluation?
+- What do traces tell me that scores do not?
+- What does a ground truth help with, and when is there no ground truth?
+- How does tool-call evaluation infer what should have happened?
+- Why keep the evaluator separate from the responding agent?
+- Should the agent and evaluator use the same model?
+- When should I use inline evaluation vs `evaluate()` with a dataset?
+- How can evaluation results be sent to Azure AI Foundry?
+- Why would CI/CD run evaluations on pull requests?
+
 ## Quick Comparison Table
 
 | Concept | Main Purpose | Best Mental Model | Example |
@@ -383,6 +584,8 @@ These are the concepts I should be able to explain simply and confidently.
 | Knowledge Provider | Inject external domain facts | RAG for grounding | [07-agent-knowledge-postgres-hybrid-search.py](./scripts/02-context-and-memory/07-agent-knowledge-postgres-hybrid-search.py) |
 | Middleware | Wrap execution behavior | cross-cutting pipeline control | [09-agent-summarization-middleware.py](./scripts/02-context-and-memory/09-agent-summarization-middleware.py) |
 | Sub-agent | Isolate work and context | delegated worker with its own context window | [10-agent-with-subagents.py](./scripts/02-context-and-memory/10-agent-with-subagents.py) |
+| Observability | Inspect runtime behavior | traces, logs, and tool execution visibility | [01-agent-otel-aspire.py](./scripts/03-monitoring-and-evaluating/01-agent-otel-aspire.py) |
+| Evaluation | Score answer quality | judge the run after it completes | [02-agent-eval.py](./scripts/03-monitoring-and-evaluating/02-agent-eval.py) |
 
 ## Practical Design Heuristics
 
@@ -394,6 +597,61 @@ These are the concepts I should be able to explain simply and confidently.
 - Use middleware for concerns that should apply to every run.
 - Use sub-agents when raw data is large, noisy, or specialized.
 - If a follow-up question is ambiguous, improve the search query before blaming retrieval.
+- Add observability before production so failures are visible.
+- Treat evaluation as a separate system for judging quality, not just a debugging aid.
+- Combine LLM-based evaluation with deterministic checks when exact correctness matters.
+- Keep evaluator models stable over time so trends are comparable.
+- If quality matters across releases, move evaluation into CI/CD instead of relying only on ad hoc local runs.
+
+## Practical Clarifications
+
+These are the kinds of questions that came up while studying and are worth remembering.
+
+### Context providers
+
+- A context provider is usually invoked as part of the agent run pipeline when attached to the agent.
+- That does not mean it always adds useful context.
+- A provider may run and still inject nothing if no relevant data is found.
+
+### Sessions vs history vs memory vs knowledge
+
+- session = short-lived conversational continuity
+- history = persisted transcript of prior messages
+- memory = selectively stored and later retrieved prior information
+- knowledge = external domain facts retrieved to ground answers
+
+### Summarization middleware
+
+- middleware runs on every `agent.run(...)`
+- summarization itself only happens conditionally when the threshold is exceeded
+
+### Tool-call evaluation
+
+- the evaluator usually does not have a hardcoded expected tool count
+- it infers appropriate tool usage from the query, tool definitions, and actual response history
+- if exact tool expectations matter, deterministic assertions are better than pure LLM judgment
+
+### Response completeness
+
+- this is mainly about whether the final answer contains the expected information
+- it does not directly care how the answer was produced
+- good tool usage and complete answers are related, but they are not the same metric
+
+### Intent resolution vs task adherence
+
+- intent resolution asks whether the user's problem was solved
+- task adherence asks whether the instructions and constraints were followed correctly
+
+### Self-evaluation vs external evaluation
+
+- agents can self-reflect
+- but separate evaluation is usually more trustworthy for benchmarking and monitoring
+
+### Model choice
+
+- the same model can be used for both agent and evaluator in simple demos
+- in better practice, the evaluator should often be at least as strong and more stable
+- changing evaluator models too often makes historical comparisons weaker
 
 ## What To Add Next
 
@@ -407,3 +665,4 @@ As more study days are added, this README can grow with the same structure:
 For now, the best places to review are:
 - [scripts/01-building-agents](./scripts/01-building-agents)
 - [scripts/02-context-and-memory](./scripts/02-context-and-memory)
+- [scripts/03-monitoring-and-evaluating](./scripts/03-monitoring-and-evaluating)
