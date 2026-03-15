@@ -12,10 +12,11 @@ The focus here is not just "what code was written", but the concepts behind agen
 - how to keep context small and relevant
 - how to reason about retrieval, middleware, and delegation
 
-Right now this guide covers the first 3 days of study:
+Right now this guide covers the first 4 days of study:
 - Day 1: Building agents
 - Day 2: Context and memory
 - Day 3: Monitoring and evaluating
+- Day 4: AI-driven workflows
 
 As I keep studying, I can extend this README day by day.
 
@@ -26,6 +27,7 @@ As I keep studying, I can extend this README day by day.
 - [Day 1: Building Agents](#day-1-building-agents)
 - [Day 2: Context And Memory](#day-2-context-and-memory)
 - [Day 3: Monitoring And Evaluating](#day-3-monitoring-and-evaluating)
+- [Day 4: AI-Driven Workflows](#day-4-ai-driven-workflows)
 - [Concepts To Be Able To Explain Clearly](#concepts-to-be-able-to-explain-clearly)
 - [Quick Comparison Table](#quick-comparison-table)
 - [Practical Design Heuristics](#practical-design-heuristics)
@@ -37,11 +39,13 @@ As I keep studying, I can extend this README day by day.
 - Day 1: [scripts/01-building-agents](./scripts/01-building-agents)
 - Day 2: [scripts/02-context-and-memory](./scripts/02-context-and-memory)
 - Day 3: [scripts/03-monitoring-and-evaluating](./scripts/03-monitoring-and-evaluating)
+- Day 4: [scripts/04-ai-driven-workflows](./scripts/04-ai-driven-workflows)
 
 Slide decks:
 - Building agents slides: [scripts/01-building-agents/README.md](./scripts/01-building-agents/README.md)
 - Context and memory slides: [scripts/02-context-and-memory/README.md](./scripts/02-context-and-memory/README.md)
 - Monitoring and evaluating slides: [scripts/03-monitoring-and-evaluating/README.md](./scripts/03-monitoring-and-evaluating/README.md)
+- AI-driven workflows slides: [scripts/04-ai-driven-workflows/README.md](./scripts/04-ai-driven-workflows/README.md)
 
 ## Core Mental Model
 
@@ -73,6 +77,9 @@ An agent is usually made up of a few building blocks:
 
 - `Evaluation`
   Scoring and judging whether the agent did a good job.
+
+- `Workflow`
+  A graph or sequence of steps that routes work across executors, agents, or handlers.
 
 ## Day 1: Building Agents
 
@@ -525,6 +532,179 @@ By the end of Day 3, the main ideas are:
 - model choice for evaluation should be deliberate
 - Azure AI Foundry and CI/CD make evaluation operational, not just local
 
+## Day 4: AI-Driven Workflows
+
+Folder: [scripts/04-ai-driven-workflows](./scripts/04-ai-driven-workflows)
+
+This day is about a new layer of system design:
+
+How do you turn individual agents or functions into a controlled multi-step process?
+
+### 1. A workflow is not the same thing as an agent
+
+The key idea from this day:
+
+- an agent decides what to do within its own run
+- a workflow decides how multiple steps are connected together
+
+Best mental model:
+- agent = decision-maker for a step
+- workflow = traffic controller for many steps
+
+### 2. Workflows can use plain Python executors
+
+Script: [01-wf-rag-ingest.py](./scripts/04-ai-driven-workflows/01-wf-rag-ingest.py)
+
+This sample is important because it shows that workflows are not only for agents.
+
+Pipeline:
+- extract
+- chunk
+- embed
+
+Why this matters:
+- not every step needs an LLM
+- some steps are deterministic transformations
+- workflows can mix AI and non-AI stages cleanly
+
+Best mental model:
+- use workflows to connect different kinds of processing, not just agent calls
+
+### 3. Agents can act as workflow executors
+
+Script: [02-wf-agents.py](./scripts/04-ai-driven-workflows/02-wf-agents.py)
+
+This sample uses a simple `Writer -> Reviewer` flow with `WorkflowBuilder`.
+
+What matters:
+- an `Agent` can be plugged directly into a workflow graph
+- graph edges define who runs next
+- the workflow structure is explicit rather than left to one agent's internal planning
+
+Important practical lesson from this sample:
+- a reviewer prompt can accidentally behave like a rewriter
+- if you want critique, you often need to explicitly forbid rewriting and force a feedback format
+
+### 4. Sequential orchestration passes full history through participants
+
+Script: [03-wf-agents-sequential.py](./scripts/04-ai-driven-workflows/03-wf-agents-sequential.py)
+
+`SequentialBuilder` is a higher-level orchestration pattern where each participant sees the growing conversation history.
+
+Why this matters:
+- later participants can react to everything that has happened so far
+- this is useful when the next step depends on prior dialogue, not just the latest output
+
+Best mental model:
+- direct workflow edges route outputs between nodes
+- sequential orchestration routes a shared conversation through a line of participants
+
+### 5. Conditional edges add branching logic
+
+Script: [04-wf-conditional.py](./scripts/04-ai-driven-workflows/04-wf-conditional.py)
+
+This introduces routing based on outcome.
+
+Pattern:
+- writer produces draft
+- reviewer decides whether it is approved
+- workflow branches to publisher or editor
+
+This is the first strong workflow idea beyond "do A then B":
+- now the graph can change based on the content of a prior result
+
+### 6. Structured outputs are better than fragile sentinel strings
+
+Scripts:
+- [04-wf-conditional.py](./scripts/04-ai-driven-workflows/04-wf-conditional.py)
+- [05-wf-conditional-structured.py](./scripts/04-ai-driven-workflows/05-wf-conditional-structured.py)
+
+This pair teaches an important progression.
+
+String sentinel version:
+- branch by checking prefixes like `APPROVED`
+
+Structured version:
+- branch by parsing typed JSON like `decision=APPROVED`
+
+Why structured outputs are better:
+- easier to validate
+- less brittle
+- easier to extend
+- easier to reason about in production systems
+
+Best mental model:
+- plain text branching is fine for demos
+- structured outputs are better for reliable workflow control
+
+### 7. Switch-case routing scales branching beyond yes/no
+
+Script: [06-wf-switch-case.py](./scripts/04-ai-driven-workflows/06-wf-switch-case.py)
+
+This sample shows multi-way routing:
+- classify message
+- convert to typed result
+- route to one of several handlers
+
+Why this matters:
+- not all branching is binary
+- classification-based routing is a common production pattern
+
+Best mental model:
+- conditional edge = if/else
+- switch-case = multi-route dispatcher
+
+### 8. Workflow state enables iterative loops
+
+Script: [07-wf-conditional-state.py](./scripts/04-ai-driven-workflows/07-wf-conditional-state.py)
+
+This introduces explicit workflow state and a revise-review cycle.
+
+Pattern:
+- store latest draft in state
+- review it
+- if revision is needed, edit it
+- store the updated draft
+- review again
+- publish when approved
+
+Why this matters:
+- some workflows are not just forward-only pipelines
+- they need bounded loops and shared state across iterations
+
+Best mental model:
+- state is the workflow's scratchpad
+- it is where the process remembers the latest approved or editable artifact
+
+### 9. State isolation matters across requests
+
+Script: [08-wf-conditional-state-isolated.py](./scripts/04-ai-driven-workflows/08-wf-conditional-state-isolated.py)
+
+This is a very practical production lesson:
+
+- if you reuse the same workflow and same agents across unrelated requests, state can leak
+- building a fresh workflow per request isolates workflow state and agent thread state
+
+Why this matters:
+- reproducibility
+- correctness
+- avoiding accidental carryover between users or tasks
+
+Best mental model:
+- persistent state is useful inside one workflow run
+- isolated state is essential across different workflow runs
+
+### Day 4 Summary
+
+By the end of Day 4, the main ideas are:
+- workflows coordinate steps, while agents handle step-level reasoning
+- workflows can mix deterministic executors and AI agents
+- sequential orchestration and explicit graph edges are different patterns
+- branching can be done with strings, but structured outputs are stronger
+- switch-case routing supports multi-way classification flows
+- workflow state enables iterative revision loops
+- state isolation prevents leakage across independent runs
+
 ## Concepts To Be Able To Explain Clearly
 
 These are the concepts I should be able to explain simply and confidently.
@@ -574,6 +754,17 @@ These are the concepts I should be able to explain simply and confidently.
 - How can evaluation results be sent to Azure AI Foundry?
 - Why would CI/CD run evaluations on pull requests?
 
+### Workflows and orchestration
+
+- What is the difference between an agent and a workflow?
+- When should a workflow step be a plain executor versus an AI agent?
+- What is the difference between direct graph edges and sequential orchestration?
+- Why are structured outputs better for routing than sentinel strings?
+- When do I want switch-case routing instead of simple conditional edges?
+- Why does workflow state matter in revise-review loops?
+- Why is state isolation important across requests?
+- Why can a reviewer accidentally behave like a rewriter?
+
 ## Quick Comparison Table
 
 | Concept | Main Purpose | Best Mental Model | Example |
@@ -586,6 +777,11 @@ These are the concepts I should be able to explain simply and confidently.
 | Sub-agent | Isolate work and context | delegated worker with its own context window | [10-agent-with-subagents.py](./scripts/02-context-and-memory/10-agent-with-subagents.py) |
 | Observability | Inspect runtime behavior | traces, logs, and tool execution visibility | [01-agent-otel-aspire.py](./scripts/03-monitoring-and-evaluating/01-agent-otel-aspire.py) |
 | Evaluation | Score answer quality | judge the run after it completes | [02-agent-eval.py](./scripts/03-monitoring-and-evaluating/02-agent-eval.py) |
+| Workflow | Coordinate multi-step execution | graph or sequence over executors and agents | [02-wf-agents.py](./scripts/04-ai-driven-workflows/02-wf-agents.py) |
+| Conditional Routing | Branch on prior results | if/else for workflow graphs | [04-wf-conditional.py](./scripts/04-ai-driven-workflows/04-wf-conditional.py) |
+| Structured Routing | Branch on typed decisions | validated control signals for workflows | [05-wf-conditional-structured.py](./scripts/04-ai-driven-workflows/05-wf-conditional-structured.py) |
+| Switch-case Routing | Multi-way message dispatch | classifier plus handlers | [06-wf-switch-case.py](./scripts/04-ai-driven-workflows/06-wf-switch-case.py) |
+| Workflow State | Share data across steps | workflow scratchpad | [07-wf-conditional-state.py](./scripts/04-ai-driven-workflows/07-wf-conditional-state.py) |
 
 ## Practical Design Heuristics
 
@@ -602,6 +798,11 @@ These are the concepts I should be able to explain simply and confidently.
 - Combine LLM-based evaluation with deterministic checks when exact correctness matters.
 - Keep evaluator models stable over time so trends are comparable.
 - If quality matters across releases, move evaluation into CI/CD instead of relying only on ad hoc local runs.
+- Use workflows when the process shape matters, not just the quality of one response.
+- Prefer structured outputs over text parsing when workflow routing depends on model decisions.
+- Keep review and edit roles distinct, otherwise reviewers often drift into rewriting.
+- Add explicit bounds to iterative workflow loops.
+- Build fresh workflow instances when state must not leak across requests.
 
 ## Practical Clarifications
 
@@ -653,6 +854,21 @@ These are the kinds of questions that came up while studying and are worth remem
 - in better practice, the evaluator should often be at least as strong and more stable
 - changing evaluator models too often makes historical comparisons weaker
 
+### Reviewer behavior
+
+- a reviewer agent may accidentally rewrite or paraphrase instead of critique
+- if critique is the goal, explicitly forbid rewriting and force a feedback format
+
+### Conditional routing
+
+- sentinel text like `APPROVED` works, but structured decisions are usually more robust
+- structured routing makes branch logic easier to validate and extend
+
+### Workflow state
+
+- state is useful inside an iterative workflow run
+- state should often be isolated across separate requests by creating a fresh workflow instance
+
 ## What To Add Next
 
 As more study days are added, this README can grow with the same structure:
@@ -666,3 +882,4 @@ For now, the best places to review are:
 - [scripts/01-building-agents](./scripts/01-building-agents)
 - [scripts/02-context-and-memory](./scripts/02-context-and-memory)
 - [scripts/03-monitoring-and-evaluating](./scripts/03-monitoring-and-evaluating)
+- [scripts/04-ai-driven-workflows](./scripts/04-ai-driven-workflows)
